@@ -117,7 +117,7 @@ resource "aws_instance" "flask_server" {
 
               curl -X POST -H 'Content-type: application/json' \
               --data '{"text":"PRODUCTION API DOWN"}' \
-              "https://hooks.slack.com/services/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"
+              "https://hooks.slack.com/serv"
 
               fi
 

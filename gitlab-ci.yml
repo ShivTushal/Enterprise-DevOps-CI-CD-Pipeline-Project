@@ -1,0 +1,326 @@
+
+stages:
+  - validate
+  - deploy
+
+# ==========================================
+# PYTHON VALIDATION
+# ==========================================
+
+python-validation:
+
+  stage: validate
+
+  image: python:3.11
+
+  only:
+    - /^feature\/.*$/
+    - Develop
+    - main
+
+  before_script:
+    - pip install -r requirements.txt
+
+  script:
+    - python -m py_compile app.py
+    - echo "Python validation successful"
+
+# ==========================================
+# TERRAFORM VALIDATION
+# ==========================================
+
+terraform-validation:
+
+  stage: validate
+
+  image:
+    name: hashicorp/terraform:latest
+    entrypoint: [""]
+
+  only:
+    - /^feature\/.*$/
+    - Develop
+    - main
+
+  script:
+    - cd Terraform
+    - terraform init
+    - terraform fmt -check
+    - terraform validate
+
+
+# ==========================================
+# DEVELOP DEPLOYMENT
+# ==========================================
+
+deploy-dev:
+
+  stage: deploy
+
+  image: docker:24.0.5
+
+  services:
+    - docker:24.0.5-dind
+
+  only:
+    - Develop
+
+  before_script:
+
+    - apk add --no-cache python3 py3-pip curl openssh-client wget unzip
+
+    - pip install awscli
+
+    - wget https://releases.hashicorp.com/terraform/1.8.5/terraform_1.8.5_linux_amd64.zip
+
+    - unzip terraform_1.8.5_linux_amd64.zip
+
+    - mv terraform /usr/local/bin/
+
+    - terraform version
+
+  script:
+
+    # ======================================
+    # TERRAFORM APPLY
+    # ======================================
+
+    - cd Terraform
+
+    - terraform init
+
+    - terraform apply -var-file=dev.tfvars -auto-approve
+
+    # ======================================
+    # GET EC2 PUBLIC IP
+    # ======================================
+
+    - export DEV_SERVER_IP=$(terraform output -raw public_ip)
+
+    - echo $DEV_SERVER_IP
+
+    - cd ..
+
+    # ======================================
+    # BUILD DOCKER IMAGE
+    # ======================================
+
+    - docker build -t devops-project .
+
+    # ======================================
+    # AWS ECR LOGIN
+    # ======================================
+
+    - aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 397845934244.dkr.ecr.ap-south-1.amazonaws.com
+
+    # ======================================
+    # TAG IMAGE
+    # ======================================
+
+    - docker tag devops-project:latest 397845934244.dkr.ecr.ap-south-1.amazonaws.com/devops-project:latest
+
+    # ======================================
+    # PUSH IMAGE TO ECR
+    # ======================================
+
+    - docker push 397845934244.dkr.ecr.ap-south-1.amazonaws.com/devops-project:latest
+
+    # ======================================
+    # CREATE SSH KEY FILE
+    # ======================================
+
+    - echo "$SSH_PRIVATE_KEY" > test.pem
+
+    - chmod 400 test.pem
+
+    # ======================================
+    # SSH INTO EC2 AND DEPLOY
+    # ======================================
+
+    - |
+      ssh -o StrictHostKeyChecking=no -i test.pem ubuntu@$DEV_SERVER_IP "
+
+      /usr/local/bin/aws ecr get-login-password --region ap-south-1 | sudo docker login --username AWS --password-stdin 397845934244.dkr.ecr.ap-south-1.amazonaws.com
+
+      sudo docker pull 397845934244.dkr.ecr.ap-south-1.amazonaws.com/devops-project:latest
+
+      sudo docker stop devops-app || true
+
+      sudo docker rm devops-app || true
+
+      sudo docker run -d -p 5000:5000 --restart always --name devops-app 397845934244.dkr.ecr.ap-south-1.amazonaws.com/devops-project:latest
+      "
+
+    # ======================================
+    # HEALTH CHECK
+    # ======================================
+
+    - sleep 20
+
+    - curl http://$DEV_SERVER_IP:5000/health
+
+# ==========================================
+# PRODUCTION DEPLOYMENT
+# ==========================================
+
+
+# ==========================================
+# PRODUCTION DEPLOYMENT
+# ==========================================
+
+deploy-prod:
+
+  stage: deploy
+
+  image: docker:24.0.5
+
+  services:
+    - docker:24.0.5-dind
+
+  only:
+    - main
+
+  when: manual
+
+  before_script:
+
+    # ======================================
+    # INSTALL REQUIRED PACKAGES
+    # ======================================
+
+    - apk add --no-cache python3 py3-pip curl openssh-client wget unzip
+
+    # ======================================
+    # INSTALL AWS CLI
+    # ======================================
+
+    - pip install awscli
+
+    # ======================================
+    # INSTALL TERRAFORM
+    # ======================================
+
+    - wget https://releases.hashicorp.com/terraform/1.8.5/terraform_1.8.5_linux_amd64.zip
+
+    - unzip terraform_1.8.5_linux_amd64.zip
+
+    - mv terraform /usr/local/bin/
+
+    - terraform version
+
+  script:
+
+    # ======================================
+    # TERRAFORM APPLY
+    # ======================================
+
+    - cd Terraform
+
+    - terraform init
+
+    - terraform apply -var-file=prod.tfvars -auto-approve
+
+    # ======================================
+    # GET PROD EC2 PUBLIC IP
+    # ======================================
+
+    - export PROD_SERVER_IP=$(terraform output -raw public_ip)
+
+    - echo $PROD_SERVER_IP
+
+    - cd ..
+
+    # ======================================
+    # BUILD DOCKER IMAGE
+    # ======================================
+
+    - docker build -t devops-project .
+
+    # ======================================
+    # AWS ECR LOGIN
+    # ======================================
+
+    - aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 397845934244.dkr.ecr.ap-south-1.amazonaws.com
+
+    # ======================================
+    # TAG IMAGE
+    # ======================================
+
+    - docker tag devops-project:latest 397845934244.dkr.ecr.ap-south-1.amazonaws.com/devops-project:prod
+
+    # ======================================
+    # PUSH IMAGE TO ECR
+    # ======================================
+
+    - docker push 397845934244.dkr.ecr.ap-south-1.amazonaws.com/devops-project:prod
+
+    # ======================================
+    # CREATE SSH KEY FILE
+    # ======================================
+
+    - echo "$SSH_PRIVATE_KEY" > test.pem
+
+    - chmod 400 test.pem
+
+    # ======================================
+    # SSH INTO PROD EC2 AND DEPLOY
+    # ======================================
+
+    - |
+      ssh -o StrictHostKeyChecking=no -i test.pem ubuntu@$PROD_SERVER_IP "
+
+      /usr/local/bin/aws ecr get-login-password --region ap-south-1 | sudo docker login --username AWS --password-stdin 397845934244.dkr.ecr.ap-south-1.amazonaws.com
+
+      sudo docker pull 397845934244.dkr.ecr.ap-south-1.amazonaws.com/devops-project:prod
+
+      sudo docker stop prod-app || true
+
+      sudo docker rm prod-app || true
+
+      sudo docker run -d -p 5000:5000 \
+      --restart always \
+      --name prod-app \
+      397845934244.dkr.ecr.ap-south-1.amazonaws.com/devops-project:prod
+      "
+
+    # ======================================
+    # PRODUCTION HEALTH CHECK
+    # ======================================
+
+    - sleep 20
+
+    - curl http://$PROD_SERVER_IP:5000/health
+
+    # ======================================
+    # SLACK SUCCESS ALERT
+    # ======================================
+
+    - |
+      curl -X POST -H 'Content-type: application/json' \
+      --data '{"text":"PRODUCTION DEPLOYMENT SUCCESSFUL"}' \
+      "$SLACK_WEBHOOK_URL"
+
+
+
+# ==========================================
+# DESTROY DEVELOPMENT INFRASTRUCTURE
+# ==========================================
+
+destroy-dev:
+
+  stage: deploy
+
+  image:
+    name: hashicorp/terraform:latest
+    entrypoint: [""]
+
+  only:
+    - Develop
+
+  when: manual
+
+  script:
+    - cd Terraform
+    - terraform init
+    - terraform destroy -var-file=dev.tfvars -auto-approve
+
